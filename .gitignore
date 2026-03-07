@@ -1,0 +1,22 @@
+# Data files (raw and preprocessed — not versioned)
+data/
+data_preprocessed/
+
+# Model checkpoints and training artifacts
+checkpoints/
+results/
+logs/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Misc
+*.pdf
+nohup.out
