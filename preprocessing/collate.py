@@ -7,13 +7,25 @@ stacks everything into batched tensors.
 All timestamps (t_dyn, t_int) are kept in their original raw-hour units
 so that the IrregularGRU and InterventionMamba can use physically meaningful
 Δt values.
+
+max_seq_len (optional): if provided, each patient's dynamic sequence is
+truncated to the *last* max_seq_len observations before padding. This
+keeps the observations closest to extubation (most predictive) and prevents
+outlier patients with thousands of steps from dominating batch T_max.
 """
 
 import torch
+from functools import partial
 
 
-def collate_fn(batch: list[dict]) -> dict:
+def collate_fn(batch: list[dict], max_seq_len: int | None = None) -> dict:
     """Collate a list of ICUStreamsDataset samples into batched tensors.
+
+    Parameters
+    ----------
+    batch       : list of dicts from ICUStreamsDataset.__getitem__
+    max_seq_len : if set, truncates each patient's dynamic sequence to the
+                  last max_seq_len timesteps (closest to extubation).
 
     Returns
     dict with keys:
@@ -32,9 +44,23 @@ def collate_fn(batch: list[dict]) -> dict:
         y          : (B,)   continuous target
         y_cls      : (B,)   integer class label
     """
+    # Apply max_seq_len truncation (keep last N steps = closest to extubation)
+    if max_seq_len is not None:
+        truncated = []
+        for b in batch:
+            T = b["t_dyn"].shape[0]
+            if T > max_seq_len:
+                start = T - max_seq_len
+                b = dict(b)   # shallow copy so we don't mutate dataset cache
+                b["t_dyn"] = b["t_dyn"][start:]
+                b["Y_dyn"] = b["Y_dyn"][start:]
+                b["M_dyn"] = b["M_dyn"][start:]
+            truncated.append(b)
+        batch = truncated
+
     B = len(batch)
 
-    # gather lengths 
+    # gather lengths
     dyn_lens = torch.tensor([b["t_dyn"].shape[0] for b in batch], dtype=torch.long)
     int_lens = torch.tensor([b["t_int"].shape[0] for b in batch], dtype=torch.long)
     T_max = max(int(dyn_lens.max().item()), 2)  # torchcde requires >= 2 knots

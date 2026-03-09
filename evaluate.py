@@ -36,6 +36,7 @@ from torch.utils.data import DataLoader, Subset
 
 from sklearn.utils.class_weight import compute_class_weight
 from preprocessing.collate  import collate_fn
+from functools import partial
 from preprocessing.dataset  import ICUStreamsDataset
 from model.dual_stream_ssm  import DualStreamSSM
 
@@ -97,6 +98,7 @@ def main():
         normalize    = True,
         scalers_path = d_cfg["scalers_path"],
         task         = "cls",
+        label_scheme = d_cfg.get("label_scheme", None),
     )
 
     # Load the same split used during training
@@ -107,12 +109,14 @@ def main():
     print(f"Test set size: {len(te_idx)}")
 
     # ── Class weights (always computed from training set) ─────────────────────
-    class_names = ["<30h", "30-59h", "60-89h", ">=90h"]
+    from preprocessing.dataset import LABEL_SCHEMES
     n_classes   = cfg["model"]["n_classes"]
-    all_labels  = [int(dataset.static_df.loc[dataset.pat_ids[i]][d_cfg["label_col"]])
-                   for i in range(len(dataset))]
-    tr_labels   = [all_labels[i] for i in tr_idx]
-    te_labels   = [all_labels[i] for i in te_idx]
+    class_names = (dataset.label_names
+                   if dataset.label_names is not None
+                   else [str(i) for i in range(n_classes)])
+    all_labels  = [int(dataset.labels[i]) for i in range(len(dataset))]
+    tr_labels   = [int(dataset.labels[i]) for i in tr_idx]
+    te_labels   = [int(dataset.labels[i]) for i in te_idx]
 
     cw = compute_class_weight("balanced", classes=np.arange(n_classes), y=tr_labels)
     w  = torch.tensor(cw, dtype=torch.float32, device=device)
@@ -129,11 +133,13 @@ def main():
         tst = test_counts[c];  tst_pct = 100 * tst / len(te_idx)
         print(f"  {name:<12} {tot:>10}  {tot_pct:>8.1f}%  {tst:>6}  {tst_pct:>8.1f}%")
 
+    max_seq_len = cfg.get("data", {}).get("max_seq_len", None)
+    _collate = partial(collate_fn, max_seq_len=max_seq_len) if max_seq_len else collate_fn
     test_loader = DataLoader(
         Subset(dataset, te_idx),
         batch_size=cfg["training"]["batch_size"],
         shuffle=False,
-        collate_fn=collate_fn,
+        collate_fn=_collate,
         num_workers=2,
         pin_memory=(device.type == "cuda"),
     )

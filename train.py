@@ -26,6 +26,7 @@ from sklearn.utils.class_weight import compute_class_weight
 from torch.utils.data import DataLoader, Subset
 
 from preprocessing.collate  import collate_fn
+from functools import partial
 from preprocessing.dataset  import ICUStreamsDataset
 from model.dual_stream_ssm  import DualStreamSSM
 
@@ -40,12 +41,11 @@ def set_seed(seed: int):
 
 # ─────────────────────────────────────────────────────────────────────────────
 def build_splits(dataset: ICUStreamsDataset, cfg: dict) -> tuple:
-    """Stratified 70 / 15 / 15 split by time_range label."""
+    """Stratified 70 / 15 / 15 split, stratified by class label."""
     sp   = cfg["split"]
     seed = sp["seed"]
 
-    labels = [int(dataset.static_df.loc[pid][cfg["data"]["label_col"]])
-              for pid in dataset.pat_ids]
+    labels = dataset.labels.tolist()
     indices = list(range(len(dataset)))
 
     tr_val_idx, te_idx, tr_val_lbl, _ = train_test_split(
@@ -138,6 +138,7 @@ def main():
         normalize    = True,
         scalers_path = d_cfg["scalers_path"],
         task         = "cls",
+        label_scheme = d_cfg.get("label_scheme", None),
     )
     print(f"Total patients: {len(dataset)}")
 
@@ -146,11 +147,13 @@ def main():
     print(f"Split — train: {len(tr_idx)}, val: {len(va_idx)}, test: {len(te_idx)}")
 
     tr_cfg = cfg["training"]
+    max_seq_len = cfg.get("data", {}).get("max_seq_len", None)
+    _collate = partial(collate_fn, max_seq_len=max_seq_len) if max_seq_len else collate_fn
     train_loader = DataLoader(
         Subset(dataset, tr_idx),
         batch_size=tr_cfg["batch_size"],
         shuffle=True,
-        collate_fn=collate_fn,
+        collate_fn=_collate,
         num_workers=2,
         pin_memory=(device.type == "cuda"),
     )
@@ -158,7 +161,7 @@ def main():
         Subset(dataset, va_idx),
         batch_size=tr_cfg["batch_size"],
         shuffle=False,
-        collate_fn=collate_fn,
+        collate_fn=_collate,
         num_workers=2,
         pin_memory=(device.type == "cuda"),
     )
@@ -170,8 +173,7 @@ def main():
                os.path.join(cfg["paths"]["checkpoint_dir"], "splits.pt"))
 
     # ── Class weights ────────────────────────────────────────────────────────
-    tr_labels = [int(dataset.static_df.loc[dataset.pat_ids[i]][d_cfg["label_col"]])
-                 for i in tr_idx]
+    tr_labels = [int(dataset.labels[i]) for i in tr_idx]
     class_weights = compute_class_weight(
         class_weight="balanced",
         classes=np.arange(cfg["model"]["n_classes"]),

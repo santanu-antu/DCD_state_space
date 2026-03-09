@@ -6,6 +6,23 @@ import torch
 from torch.utils.data import Dataset
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Label scheme definitions
+# Each scheme maps from the continuous target (hours) to integer class labels
+# using np.digitize(hours, edges):  class k = number of edges that hours exceeds.
+# ─────────────────────────────────────────────────────────────────────────────
+LABEL_SCHEMES: dict[str, dict] = {
+    "4class": {
+        "edges": [30, 60, 90],           # bins: [0,30), [30,60), [60,90), [90,∞)
+        "names": ["<30h", "30-59h", "60-89h", ">=90h"],
+    },
+    "6class": {
+        "edges": [30, 60, 120, 180, 240],  # bins: [0,30), [30,60), [60,120), [120,180), [180,240), [240,∞)
+        "names": ["<30h", "30-60h", "60-120h", "120-180h", "180-240h", ">240h"],
+    },
+}
+
+
 class ICUStreamsDataset(Dataset):
     def __init__(
         self,
@@ -21,6 +38,7 @@ class ICUStreamsDataset(Dataset):
         normalize: bool = False,
         scalers_path: str | None = None,
         task: str = "cls",        # "cls" | "reg" | "both"
+        label_scheme: str | None = None,  # "4class" | "6class" | None → use label_col from CSV
     ):
         self.static_df = pd.read_csv(static_csv)
         self.dyn_df    = pd.read_csv(dyn_csv)
@@ -64,6 +82,24 @@ class ICUStreamsDataset(Dataset):
         # make static row lookup
         self.static_df = self.static_df.set_index(pid_col)
 
+        # ── Precompute integer labels for all patients ──────────────────────
+        # If label_scheme is set, derive labels from the continuous target_col;
+        # otherwise fall back to the precomputed label_col column in the CSV.
+        self.label_scheme = label_scheme
+        if label_scheme is not None:
+            if label_scheme not in LABEL_SCHEMES:
+                raise ValueError(
+                    f"Unknown label_scheme {label_scheme!r}. "
+                    f"Choose from: {list(LABEL_SCHEMES)}"
+                )
+            scheme = LABEL_SCHEMES[label_scheme]
+            self.label_names: list[str] = scheme["names"]
+            hours = self.static_df.loc[self.pat_ids][target_col].values.astype(float)
+            self.labels: np.ndarray = np.digitize(hours, scheme["edges"]).astype(int)
+        else:
+            self.label_names = None
+            self.labels = self.static_df.loc[self.pat_ids][label_col].values.astype(int)
+
     def __len__(self):
         return len(self.pat_ids)
 
@@ -81,7 +117,7 @@ class ICUStreamsDataset(Dataset):
         S = torch.tensor(s_vals, dtype=torch.float32)
 
         y     = torch.tensor(float(s_row[self.target_col]), dtype=torch.float32)
-        y_cls = torch.tensor(int(s_row[self.label_col]),    dtype=torch.long)
+        y_cls = torch.tensor(int(self.labels[idx]),          dtype=torch.long)
 
         # Dynamic + mask 
         d = self.dyn_g.get_group(pid).copy()

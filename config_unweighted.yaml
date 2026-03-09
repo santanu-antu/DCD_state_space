@@ -21,6 +21,7 @@ data:
   label_col:    time_range
   time_col:     time_to_extube_hours
   pid_col:      PAT_ID
+  label_scheme: "4class"  # "4class" | "6class"
 
 split:
   train_frac: 0.70
@@ -36,6 +37,9 @@ model:
   n_int:    5
   n_static: 5
   n_classes: 4
+  dynamic_module: irr_gru  # "irr_gru" | "ode_rnn"
+  ode_hidden: 64
+  ode_layers: 2
 
 training:
   batch_size:        16

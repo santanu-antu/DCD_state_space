@@ -21,7 +21,8 @@ data:
   label_col:    time_range
   time_col:     time_to_extube_hours
   pid_col:      PAT_ID
-  label_scheme: "4class"  # "4class" | "6class"
+  max_seq_len:  300   # truncate to last 300 dynamic steps (closest to extubation)
+  label_scheme: "6class"  # <30, 30-60, 60-120, 120-180, 180-240, >240
 
 split:
   train_frac: 0.70
@@ -29,31 +30,32 @@ split:
   seed: 42
 
 model:
-  d_h:      64
-  d_u:      32
-  d_z:      128
+  d_h:      128
+  d_u:      64
+  d_z:      256
   n_read:   10
   n_dyn:    20
   n_int:    5
   n_static: 5
-  n_classes: 4
-  dynamic_module: irr_gru  # "irr_gru" | "ode_rnn"
+  n_classes: 6          # must match label_scheme
+  dynamic_module: ode_rnn
   ode_hidden: 64
   ode_layers: 2
+  dropout:  0.1
 
 training:
   batch_size:        16
   epochs:            15
-  lr:                1.0e-3
-  weight_decay:      1.0e-4
+  lr:                5.0e-4
+  weight_decay:      1.0e-3
   grad_clip:         1.0
   lr_scheduler:      plateau
   lr_patience:       3
   lr_factor:         0.5
-  use_class_weights: true
+  use_class_weights: false
 
 paths:
   checkpoint_dir: checkpoints/
   log_dir:        logs/
-  best_model:     checkpoints/best_model_weighted.pt
-  results:        results/test_metrics_weighted.json
+  best_model:     checkpoints/best_model_ode_rnn_6class.pt
+  results:        results/test_metrics_ode_rnn_6class.json
