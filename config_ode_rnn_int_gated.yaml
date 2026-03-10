@@ -21,7 +21,7 @@ data:
   label_col:    time_range
   time_col:     time_to_extube_hours
   pid_col:      PAT_ID
-  max_seq_len:  300   # truncate to last 300 dynamic steps (closest to extubation)
+  max_seq_len:  300
   label_scheme: "4class"  # "4class" | "6class"
 
 split:
@@ -42,7 +42,7 @@ model:
   ode_hidden: 64
   ode_layers: 2
   dropout:  0.1
-  h_mode: continuous       # "continuous" | "intervention_gated"
+  h_mode: intervention_gated  # h(t) only injected at dynamic steps with a concurrent medication event
 
 training:
   batch_size:        16
@@ -58,5 +58,5 @@ training:
 paths:
   checkpoint_dir: checkpoints/
   log_dir:        logs/
-  best_model:     checkpoints/best_model_ode_rnn.pt
-  results:        results/test_metrics_ode_rnn.json
+  best_model:     checkpoints/best_model_ode_rnn_int_gated.pt
+  results:        results/test_metrics_ode_rnn_int_gated.json

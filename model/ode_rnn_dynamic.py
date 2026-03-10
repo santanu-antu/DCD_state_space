@@ -111,12 +111,13 @@ class ODERNNDynamic(nn.Module):
     # ─────────────────────────────────────────────────────────────────────────
     def forward(
         self,
-        z0:       torch.Tensor,       # (B, d_z)
-        t_dyn:    torch.Tensor,       # (B, T_max)   actual timestamps (raw hours)
-        Y_dyn:    torch.Tensor,       # (B, T_max, n_dyn)
-        M_dyn:    torch.Tensor,       # (B, T_max, n_dyn)
-        dyn_lens: torch.Tensor,       # (B,)
-        h_path:   InterpolatedPath,   # Mamba hidden-state path
+        z0:                torch.Tensor,              # (B, d_z)
+        t_dyn:             torch.Tensor,              # (B, T_max)   actual timestamps (raw hours)
+        Y_dyn:             torch.Tensor,              # (B, T_max, n_dyn)
+        M_dyn:             torch.Tensor,              # (B, T_max, n_dyn)
+        dyn_lens:          torch.Tensor,              # (B,)
+        h_path:            InterpolatedPath,          # Mamba hidden-state path
+        intervention_mask: torch.Tensor | None = None,  # (B, T_max) bool — None → continuous
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Returns
@@ -141,8 +142,18 @@ class ODERNNDynamic(nn.Module):
             # ODE evolution over real time gap (skip at first step)
             z_ode = z if k == 0 else self._evolve(z, dt)    # (B, d_z)
 
-            # Query Mamba path at actual observation timestamp
-            h_k = h_path.query(t_k).to(device)              # (B, d_h)
+            # Query Mamba path at actual observation timestamp.
+            # In gated mode: skip the query entirely if no sample in the batch
+            # has an intervention at this step (avoids all ZOH lookup work).
+            if intervention_mask is not None:
+                gate = intervention_mask[:, k]                      # (B,) bool
+                if gate.any():
+                    h_k = h_path.query(t_k).to(device)              # (B, d_h)
+                    h_k = h_k * gate.to(dtype).unsqueeze(1)         # zero non-event
+                else:
+                    h_k = torch.zeros(B, self.d_h, device=device, dtype=dtype)
+            else:
+                h_k = h_path.query(t_k).to(device)                  # (B, d_h)
 
             # GRU update
             inp   = torch.cat([Y_dyn[:, k], M_dyn[:, k], h_k], dim=-1)

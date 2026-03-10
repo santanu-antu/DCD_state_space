@@ -40,6 +40,7 @@ model:
   dynamic_module: irr_gru  # "irr_gru" | "ode_rnn"
   ode_hidden: 64
   ode_layers: 2
+  h_mode: continuous       # "continuous" | "intervention_gated"
 
 training:
   batch_size:        16

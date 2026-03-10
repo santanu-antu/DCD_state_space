@@ -72,12 +72,13 @@ class IrregularGRU(nn.Module):
 
     def forward(
         self,
-        z0:       torch.Tensor,       # (B, d_z)   initial latent from StaticEncoder
-        t_dyn:    torch.Tensor,       # (B, T_max) actual timestamps (raw hours)
-        Y_dyn:    torch.Tensor,       # (B, T_max, n_dyn)
-        M_dyn:    torch.Tensor,       # (B, T_max, n_dyn)  1=observed, 0=imputed
-        dyn_lens: torch.Tensor,       # (B,)  actual sequence lengths
-        h_path:   InterpolatedPath,   # Mamba hidden-state path (raw-hour time axis)
+        z0:                torch.Tensor,              # (B, d_z)   initial latent from StaticEncoder
+        t_dyn:             torch.Tensor,              # (B, T_max) actual timestamps (raw hours)
+        Y_dyn:             torch.Tensor,              # (B, T_max, n_dyn)
+        M_dyn:             torch.Tensor,              # (B, T_max, n_dyn)  1=observed, 0=imputed
+        dyn_lens:          torch.Tensor,              # (B,)  actual sequence lengths
+        h_path:            InterpolatedPath,          # Mamba hidden-state path (raw-hour time axis)
+        intervention_mask: torch.Tensor | None = None,  # (B, T_max) bool — None → continuous
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Returns
@@ -108,8 +109,18 @@ class IrregularGRU(nn.Module):
             decay    = torch.exp(-gamma * dt.unsqueeze(1))          # (B, d_z)
             z_decayed = z * decay                                   # (B, d_z)
 
-            # Query Mamba intervention path at the actual observation timestamp
-            h_k = h_path.query(t_k).to(device)                     # (B, d_h)
+            # Query Mamba intervention path at the actual observation timestamp.
+            # In gated mode: skip the query entirely if no sample in the batch
+            # has an intervention at this step (avoids all ZOH lookup work).
+            if intervention_mask is not None:
+                gate = intervention_mask[:, k]                      # (B,) bool
+                if gate.any():
+                    h_k = h_path.query(t_k).to(device)              # (B, d_h)
+                    h_k = h_k * gate.to(dtype).unsqueeze(1)         # zero non-event
+                else:
+                    h_k = torch.zeros(B, self.d_h, device=device, dtype=dtype)
+            else:
+                h_k = h_path.query(t_k).to(device)                  # (B, d_h)
 
             # GRU update
             inp   = torch.cat([Y_dyn[:, k], M_dyn[:, k], h_k], dim=-1)  # (B, 2n+d_h)

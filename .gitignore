@@ -2,6 +2,9 @@
 data/
 data_preprocessed/
 
+# Baseline model data symlinks (same raw data, not versioned)
+baseline_model/*.csv
+
 # Model checkpoints and training artifacts
 checkpoints/
 results/

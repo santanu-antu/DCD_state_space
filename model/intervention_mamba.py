@@ -20,7 +20,8 @@ For each medication event at time t_k with dose u_k ∈ R^{n_int}:
        h_k = Ā_k ⊙ h_{k−1} + B̄_k
 
 After processing all K events the module stores {(t_k, h_k)} and exposes
-`query(t)` for linear interpolation at arbitrary query times.
+`query(t)` for zero-order-hold (ZOH) lookup at arbitrary query times.
+ZOH is causally correct: no future event information leaks into the query.
 
 For patients with no medication events the hidden state stays at h₀.
 """
@@ -179,10 +180,12 @@ class InterventionMamba(nn.Module):
 
 class InterpolatedPath:
     """
-    Piecewise-linear interpolation of (time, hidden-state) sequence.
+    Zero-order-hold (ZOH) lookup over a (time, hidden-state) sequence.
 
-    query(t)  → (B, d_h)  linearly interpolated hidden state at scalar time t.
-    Clamps to the first/last recorded state outside the observation window.
+    query(t)  → (B, d_h)  returns the most-recently-updated hidden state
+    at or before t, i.e. h(t) = h_{k}  where k = max{j : t_j <= t}.
+    This is causally correct: future medication events never influence
+    the returned state.
     """
 
     def __init__(
@@ -230,24 +233,25 @@ class InterpolatedPath:
 
         t_lo  = self.times_mat[:-1]    # (K, B)
         t_hi  = self.times_mat[1:]     # (K, B)
-        h_lo  = self.states_mat[:-1]   # (K, B, d_h)
-        h_hi  = self.states_mat[1:]    # (K, B, d_h)
+        h_lo  = self.states_mat[:-1]   # (K, B, d_h)  state entering segment
+        h_hi  = self.states_mat[1:]    # (K, B, d_h)  state at end of segment
 
-        t_q_e = t_q.unsqueeze(0)                                        # (1, B)
-        span  = (t_hi - t_lo).clamp(min=1e-8)                          # (K, B)
-        alpha = ((t_q_e - t_lo) / span).clamp(0.0, 1.0).unsqueeze(-1) # (K, B, 1)
-        h_seg = h_lo + alpha * (h_hi - h_lo)                           # (K, B, d_h)
+        t_q_e = t_q.unsqueeze(0)                         # (1, B)
 
-        # Active segment: t_lo[k] <= t_q < t_hi[k].
-        # Last segment also catches t_q >= t_hi[-1] (right extrapolation).
-        in_seg = (t_q_e >= t_lo) & (t_q_e < t_hi)    # (K, B)
-        in_seg[-1] = in_seg[-1] | (t_q >= t_hi[-1])  # right boundary
+        # Active segment: t_lo[k] <= t_q < t_hi[k]
+        in_seg = (t_q_e >= t_lo) & (t_q_e < t_hi)       # (K, B)
 
-        # Weighted sum — each column has exactly one True entry.
-        h_out = (in_seg.float().unsqueeze(-1) * h_seg).sum(0)  # (B, d_h)
+        # Right extrapolation: t_q >= last breakpoint → hold final state
+        right_mask = (t_q >= t_hi[-1])                   # (B,)
 
-        # Left extrapolation: t_q < first t_lo
-        left_mask = (t_q < t_lo[0]).unsqueeze(-1)   # (B, 1)
+        # ZOH: return h_lo of the active segment (no blend toward h_hi)
+        h_out = (in_seg.float().unsqueeze(-1) * h_lo).sum(0)  # (B, d_h)
+
+        # Right extrapolation: clamp to last recorded state
+        h_out = torch.where(right_mask.unsqueeze(-1), h_hi[-1], h_out)
+
+        # Left extrapolation: t_q < first breakpoint → return h0
+        left_mask = (t_q < t_lo[0]).unsqueeze(-1)        # (B, 1)
         h_out = torch.where(left_mask, h_lo[0], h_out)
 
         return h_out
