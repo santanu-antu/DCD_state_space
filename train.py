@@ -301,10 +301,14 @@ def main():
 
     for epoch in range(1, tr_cfg["epochs"] + 1):
         t0 = time.time()
+        # Gradient-update pass (train mode)
+        run_epoch(model, train_loader, criterion,
+                  optimizer, device, tr_cfg["grad_clip"], train=True)
+        # Eval-mode pass over train set — fair comparison with val (no dropout, no grad)
         tr_loss, tr_acc = run_epoch(model, train_loader, criterion,
-                                    optimizer, device, tr_cfg["grad_clip"], train=True)
+                                    None, device, tr_cfg["grad_clip"], train=False)
         va_loss, va_acc = run_epoch(model, val_loader,   criterion,
-                                    None,      device, tr_cfg["grad_clip"], train=False)
+                                    None, device, tr_cfg["grad_clip"], train=False)
         if scheduler is not None:
             if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 scheduler.step(va_loss)

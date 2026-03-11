@@ -50,9 +50,9 @@ DATA = dict(
     static_csv = os.path.join(HERE, "static_target.csv"),
 )
 
-SEED        = 42
-TRAIN_FRAC  = 0.70
-VAL_FRAC    = 0.15
+SEED        = 7
+TRAIN_FRAC  = 0.45
+VAL_FRAC    = 0.40
 # TEST_FRAC = 0.15 (remainder)
 
 CLASS_NAMES = ["<30h", "30-59h", "60-89h", ">=90h"]
@@ -234,8 +234,12 @@ def main():
 
     for epoch in range(1, args.epochs + 1):
         t0 = time_mod.time()
+        # Gradient-update pass (train mode)
+        run_epoch(model, train_loader, criterion,
+                  optimizer, device, args.grad_clip, train=True)
+        # Eval-mode pass over train set — fair comparison with val (no dropout, no grad)
         tr_loss, tr_acc = run_epoch(model, train_loader, criterion,
-                                    optimizer, device, args.grad_clip, train=True)
+                                    None, device, args.grad_clip, train=False)
         va_loss, va_acc = run_epoch(model, val_loader, criterion,
                                     None, device, args.grad_clip, train=False)
         scheduler.step()

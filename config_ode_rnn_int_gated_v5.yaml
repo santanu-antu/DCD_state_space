@@ -3,7 +3,7 @@ data:
   dyn_csv:      data/dynamic_variables.csv
   mask_csv:     data/missing_variables.csv
   int_csv:      data/medications.csv
-  scalers_path: data_preprocessed/scalers.pkl
+  scalers_path: data_preprocessed/scalers_v5.pkl
   static_cols:
     - SEX
     - WEIGHT_IN_KG
@@ -21,13 +21,13 @@ data:
   label_col:    time_range
   time_col:     time_to_extube_hours
   pid_col:      PAT_ID
-  max_seq_len:  300   # truncate to last 300 dynamic steps (closest to extubation)
-  label_scheme: "4class"  # "4class" | "6class"
+  max_seq_len:  300
+  label_scheme: "4class"
 
 split:
-  train_frac: 0.70
-  val_frac:   0.15
-  seed: 42
+  train_frac: 0.45
+  val_frac:   0.40
+  seed: 123
 
 model:
   d_h:      128
@@ -42,10 +42,10 @@ model:
   ode_hidden: 64
   ode_layers: 2
   dropout:  0.1
-  h_mode: continuous       # "continuous" | "intervention_gated"
+  h_mode: intervention_gated
 
 training:
-  batch_size:        16
+  batch_size:        32
   epochs:            15
   lr:                5.0e-4
   weight_decay:      1.0e-3
@@ -53,10 +53,10 @@ training:
   lr_scheduler:      plateau
   lr_patience:       3
   lr_factor:         0.5
-  use_class_weights: false
+  use_class_weights: true
 
 paths:
   checkpoint_dir: checkpoints/
   log_dir:        logs/
-  best_model:     checkpoints/best_model_ode_rnn.pt
-  results:        results/test_metrics_ode_rnn.json
+  best_model:     checkpoints/best_model_ode_rnn_int_gated_v5.pt
+  results:        results/test_metrics_ode_rnn_int_gated_v5.json

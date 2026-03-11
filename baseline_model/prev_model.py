@@ -107,11 +107,11 @@ class _GRU(torch.nn.Module):
         # X[:, 0, 0] -= times[0]
         # X[:, 1:, 0] -= times[:-1]
         
-        # Original (pre-fix) time-zeroing logic — retained for reproducibility.
+        # Per-patient time zeroing: subtract each patient's own first timestamp.
         tc = t.clone()
-        tc -= t[0, :]                                            # subtracts first batch-item's times
-        dt_diff = tc[1:, :] - tc[:-1, :]                        # differences along batch dim (not time dim)
-        deltat = torch.cat((torch.zeros_like(tc[0:1, :]), dt_diff), dim=0)
+        tc = tc - tc[:, 0:1, :]                              # (B, T, 1) — per-patient relative time
+        dt_diff = tc[:, 1:, :] - tc[:, :-1, :]              # (B, T-1, 1) — differences along time dim
+        deltat = torch.cat((torch.zeros_like(tc[:, 0:1, :]), dt_diff), dim=1)
 
         batch_dims = X.shape[:-2]
 
