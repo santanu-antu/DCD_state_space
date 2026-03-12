@@ -6,11 +6,9 @@ import torch
 from torch.utils.data import Dataset
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Label scheme definitions
+# LABEL SCHEMES
 # Each scheme maps from the continuous target (hours) to integer class labels
 # using np.digitize(hours, edges):  class k = number of edges that hours exceeds.
-# ─────────────────────────────────────────────────────────────────────────────
 LABEL_SCHEMES: dict[str, dict] = {
     "4class": {
         "edges": [30, 60, 90],           # bins: [0,30), [30,60), [60,90), [90,∞)
