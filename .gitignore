@@ -23,3 +23,10 @@ __pycache__/
 # Misc
 *.pdf
 nohup.out
+
+# Actual Baseline training outputs and logs
+actual_baseline/outputs/
+actual_baseline/results_local/
+actual_baseline/data/
+actual_baseline/run_log.txt
+*.log
