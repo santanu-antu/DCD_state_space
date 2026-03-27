@@ -92,7 +92,11 @@ def main():
     print(json.dumps(metrics, indent=2))
     print("Confusion matrix:\n", cm)
 
-    with open(args.out_json, "w") as f:
+    model_dir = os.path.dirname(args.model)
+    out_json_path = os.path.join(model_dir, args.out_json)
+    out_cm_path = os.path.join(model_dir, args.out_cm)
+
+    with open(out_json_path, "w") as f:
         json.dump(
             {
                 "metrics": metrics,
@@ -103,8 +107,8 @@ def main():
             indent=2,
         )
 
-    np.save(args.out_cm, cm)
-    print(f"Saved metrics to {args.out_json}")
+    np.save(out_cm_path, cm)
+    print(f"Saved metrics to {out_json_path}")
 
 if __name__ == "__main__":
     main()
