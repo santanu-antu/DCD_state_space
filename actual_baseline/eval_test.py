@@ -19,6 +19,43 @@ import os
 
 from model.dataset import YaleDatasetWithMissingnessInfo  # noqa: F401
 
+class CompactConfusionMatrixEncoder(json.JSONEncoder):
+    """A custom JSON encoder to format confusion matrices cleanly."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def iterencode(self, o, _one_shot=False):
+        list_lvl = 0
+        for s in super().iterencode(o, _one_shot=_one_shot):
+            if s.startswith('['):
+                list_lvl += 1
+                yield s
+            elif s.endswith(']'):
+                list_lvl -= 1
+                yield s
+            elif isinstance(o, dict) and 'confusion_matrix' in o and list_lvl == 2:
+                yield s.replace('\n', '').replace(' ', '')
+                if s == ',':
+                    yield ' '
+            else:
+                yield s
+
+def format_custom_json(data):
+    """Manually format the JSON to keep the confusion matrix compact."""
+    import re
+    json_str = json.dumps(data, indent=2)
+    
+    # We want to find the big expanded array for confusion matrix and flatten the inner lists
+    def replacer(match):
+        # Flatten by removing newlines and extensive spaces 
+        content = match.group(0)
+        content = re.sub(r'\s+', ' ', content).replace('[ ', '[').replace(' ]', ']')
+        return content
+        
+    # Match an array of numbers like: [\n      307,\n      5,\n      0,\n      0\n    ]
+    formatted_str = re.sub(r'\[\n\s+\d+[\s\d,]*\n\s+\]', replacer, json_str)
+    return formatted_str
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default="results_local/bf21/42/classification_target1dim4_ODERNNGRU_trainonly/model.pt", help="Path to the saved model")
@@ -26,7 +63,6 @@ def main():
     parser.add_argument("--target_index", type=int, default=1, help="Index of the target in y tensor")
     parser.add_argument("--batch_size", type=int, default=256, help="Batch size for evaluation")
     parser.add_argument("--out_json", type=str, default="test_metrics.json", help="Output JSON metrics file")
-    parser.add_argument("--out_cm", type=str, default="confusion_matrix.npy", help="Output confusion matrix npy file")
     args = parser.parse_args()
 
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -94,20 +130,16 @@ def main():
 
     model_dir = os.path.dirname(args.model)
     out_json_path = os.path.join(model_dir, args.out_json)
-    out_cm_path = os.path.join(model_dir, args.out_cm)
+
+    final_data = {
+        "metrics": metrics,
+        "confusion_matrix": cm.tolist(),
+        "classification_report": report,
+    }
 
     with open(out_json_path, "w") as f:
-        json.dump(
-            {
-                "metrics": metrics,
-                "confusion_matrix": cm.tolist(),
-                "classification_report": report,
-            },
-            f,
-            indent=2,
-        )
+        f.write(format_custom_json(final_data))
 
-    np.save(out_cm_path, cm)
     print(f"Saved metrics to {out_json_path}")
 
 if __name__ == "__main__":
