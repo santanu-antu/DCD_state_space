@@ -1,17 +1,15 @@
 """
 ODERNNDynamic
 -------------
-Drop-in replacement for IrregularGRU that uses an ODE to evolve
-the hidden state between observations instead of exponential decay.
+Drop-in replacement for IrregularGRU that uses an ODE to evolve the hidden state between observations instead of exponential decay.
 
-Architecture
-~~~~~~~~~~~~
+Architecture:
+
 Between observations k-1 and k (real time gap Δt_k hours):
 
     dz/dt = f_θ(z)        (autonomous ODE — learned MLP)
 
-integrated for Δt_k real hours via a single-step RK4 (pure tensor ops),
-then a GRU update at the observation:
+integrated for Δt_k real hours via a single-step RK4 (pure tensor ops), then a GRU update at the observation:
 
     h_k  = h_path.query(t_k)
     z_k  = GRUCell([y_k | m_k | h_k], z_ode)
@@ -25,8 +23,7 @@ from 0 to 1 and scale the ODE output by Δt_k:
 with the solution evaluated via a single RK4 step (h=1 over [0,1]).
 This is pure PyTorch tensors — no torchdiffeq overhead per step.
 
-Interface
-~~~~~~~~~
+Interface:
 Identical to IrregularGRU: forward() takes and returns the same tensors
 so DualStreamSSM can swap between the two with a single config flag.
 """
@@ -37,7 +34,6 @@ import torch.nn as nn
 from model.intervention_mamba import InterpolatedPath
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 class _ODEFunc(nn.Module):
     """Autonomous ODE function  dz/dt = MLP(z)."""
 
@@ -53,13 +49,12 @@ class _ODEFunc(nn.Module):
         return self.net(z)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 class ODERNNDynamic(nn.Module):
     """
     ODE-RNN dynamic stream with Mamba intervention conditioning.
 
     Parameters
-    ----------
+
     n_dyn      : number of dynamic input channels
     d_h        : Mamba hidden dimension (context injected at each step)
     d_z        : ODE / GRU hidden dimension
@@ -82,19 +77,16 @@ class ODERNNDynamic(nn.Module):
         self.d_z = d_z
         self.d_h = d_h
 
-    # ─────────────────────────────────────────────────────────────────────────
     def _evolve(self, z: torch.Tensor, dt: torch.Tensor) -> torch.Tensor:
         """
-        Single-step RK4: integrates dz/ds = f_θ(z) · dt  over s ∈ [0, 1].
-        Pure tensor ops — no external solver overhead.
+        Single-step RK4: integrates dz/ds = f_θ(z) · dt  over s in [0, 1].
+        Pure tensor ops: no external solver overhead.
 
-        Parameters
-        ----------
+        # Parameters
         z  : (B, d_z)  current hidden state
         dt : (B,)      real time gaps in hours
 
-        Returns
-        -------
+        # Returns
         z_ode : (B, d_z)
         """
         dt = dt.unsqueeze(1)          # (B, 1) — broadcast over d_z
@@ -108,7 +100,60 @@ class ODERNNDynamic(nn.Module):
         k4 = f(z + k3)
         return z + (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0
 
-    # ─────────────────────────────────────────────────────────────────────────
+    def sample_uniform_states(
+        self,
+        Z_obs:      torch.Tensor,   # (B, T_max, d_z) post-GRU states at observation times
+        t_dyn:      torch.Tensor,   # (B, T_max)      observation timestamps (hours)
+        dyn_lens:   torch.Tensor,   # (B,)            valid observation counts
+        n_samples:  int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Sample the continuous ODE-RNN latent state at uniformly-spaced times.
+
+        For each patient b:
+          - Build a uniform grid over [t_dyn[b,0], t_dyn[b,last_valid]]
+          - For each grid time t_q, find the latest observation index j with
+            t_dyn[b,j] <= t_q
+          - Start from z_j (post-GRU state at j) and evolve forward by
+            dt = t_q - t_dyn[b,j] using the ODE to obtain z(t_q)
+
+        Returns
+        -------
+        Z_uniform : (B, n_samples, d_z)
+        t_uniform : (B, n_samples)
+        """
+        B, T_max, d_z = Z_obs.shape
+        device = Z_obs.device
+        dtype  = Z_obs.dtype
+
+        last_idx = (dyn_lens - 1).clamp(min=0)                                # (B,)
+        t_start  = t_dyn[:, 0]                                                 # (B,)
+        t_end    = t_dyn[torch.arange(B, device=device), last_idx]             # (B,)
+
+        alpha = torch.linspace(0.0, 1.0, n_samples, device=device, dtype=dtype)   # (n_samples,)
+        t_uniform = t_start.unsqueeze(1) + alpha.unsqueeze(0) * (t_end - t_start).unsqueeze(1)
+
+        valid = (torch.arange(T_max, device=device).unsqueeze(0) < dyn_lens.unsqueeze(1)).unsqueeze(2)
+        at_or_before = (t_dyn.unsqueeze(2) <= t_uniform.unsqueeze(1)) & valid      # (B, T_max, n_samples)
+
+        k_idx = torch.arange(T_max, device=device, dtype=dtype).view(1, T_max, 1)
+        sel_idx = torch.where(at_or_before, k_idx, torch.full_like(k_idx, -1.0))
+        anchor_idx = sel_idx.max(dim=1).values.long().clamp(min=0)                 # (B, n_samples)
+
+        gather_idx = anchor_idx.unsqueeze(2).expand(B, n_samples, d_z)
+        z_anchor = Z_obs.gather(1, gather_idx)                                      # (B, n_samples, d_z)
+
+        t_anchor = t_dyn.gather(1, anchor_idx)                                      # (B, n_samples)
+        dt = (t_uniform - t_anchor).clamp(min=0.0)                                  # (B, n_samples)
+
+        z_anchor_flat = z_anchor.reshape(B * n_samples, d_z)
+        dt_flat = dt.reshape(B * n_samples)
+        z_uniform_flat = self._evolve(z_anchor_flat, dt_flat)
+        Z_uniform = z_uniform_flat.reshape(B, n_samples, d_z)
+
+        return Z_uniform, t_uniform
+
+
     def forward(
         self,
         z0:                torch.Tensor,              # (B, d_z)
@@ -117,11 +162,10 @@ class ODERNNDynamic(nn.Module):
         M_dyn:             torch.Tensor,              # (B, T_max, n_dyn)
         dyn_lens:          torch.Tensor,              # (B,)
         h_path:            InterpolatedPath,          # Mamba hidden-state path
-        intervention_mask: torch.Tensor | None = None,  # (B, T_max) bool — None → continuous
+        intervention_mask: torch.Tensor | None = None,  # (B, T_max) bool — None -> continuous
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Returns
-        -------
         z_final : (B, d_z)
         Z_traj  : (B, T_max, d_z)
         """
@@ -143,8 +187,7 @@ class ODERNNDynamic(nn.Module):
             z_ode = z if k == 0 else self._evolve(z, dt)    # (B, d_z)
 
             # Query Mamba path at actual observation timestamp.
-            # In gated mode: skip the query entirely if no sample in the batch
-            # has an intervention at this step (avoids all ZOH lookup work).
+            # In gated mode: skip the query entirely if no sample in the batch has an intervention at this step (avoids all ZOH lookup work).
             if intervention_mask is not None:
                 gate = intervention_mask[:, k]                      # (B,) bool
                 if gate.any():

@@ -30,3 +30,7 @@ actual_baseline/results_local/
 actual_baseline/data/
 actual_baseline/run_log.txt
 *.log
+sweeps/
+run_yale_sweep.slurm
+sweep_yale_bf_to_af.sh
+run_experiments.sh

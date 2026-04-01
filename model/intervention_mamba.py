@@ -1,23 +1,21 @@
 """
-Time-aware Mamba-style SSM that evolves a hidden state h(t) driven by
-sparse, irregularly-timed medication events.
+Time-aware Mamba-style SSM that evolves a hidden state h(t) driven by sparse, irregularly-timed medication events.
 
 Architecture:
 
-For each medication event at time t_k with dose u_k ∈ R^{n_int}:
-
-  1. Project dose:   ũ_k = LayerNorm(Linear(n_int → d_u))
-  2. Compute input-dependent parameters (selectivity, à la Mamba):
-       ΔB_k, ΔC_k, δ_k = Linear(d_u → d_h + d_h + 1)
+For each medication event at time t_k with dose u_k in R^{n_int}:
+  1. Project dose:   u'_k = LayerNorm(Linear(n_int -> d_u))
+  2. Compute input-dependent parameters (selectivity, like Mamba):
+       ΔB_k, ΔC_k, δ_k = Linear(d_u -> d_u*d_h + d_h + 1)
   3. Effective SSM parameters for this step:
        Â   = diag(exp(A_log))          base (learnable, kept negative)
-       B̂_k = B + ΔB_k                  input-dependent input matrix (d_h × d_u)
+       B̂_k = B + ΔB_k                  input-dependent input matrix (d_h , d_u)
        Ĉ_k = C + ΔC_k                  input-dependent output vector (d_h,)
-  4. ZOH discretization with Δt_k = t_k − t_{k−1}:
+  4. ZOH discretization with Δt_k = t_k - t_{k-1}:
        Ā_k = exp(diag(Â) · Δt_k · softplus(δ_k))   (d_h,)
-       B̄_k = (Ā_k − 1) / diag(Â) ⊙ B̂_k · ũ_k      (d_h,)
+       B̄_k = (Ā_k - 1) / diag(Â) ⊙ B̂_k · u'_k      (d_h,)
   5. State update:
-       h_k = Ā_k ⊙ h_{k−1} + B̄_k
+       h_k = Ā_k ⊙ h_{k-1} + B̄_k
 
 After processing all K events the module stores {(t_k, h_k)} and exposes
 `query(t)` for zero-order-hold (ZOH) lookup at arbitrary query times.
@@ -36,8 +34,7 @@ import torch.nn.functional as F
 class InterventionMamba(nn.Module):
     def __init__(self, n_int: int, d_u: int, d_h: int):
         """
-        Parameters
-        ----------
+        ## Parameters:
         n_int : number of medication channels (e.g. 5)
         d_u   : internal medication projection dimension
         d_h   : hidden state (SSM state) dimension
@@ -53,9 +50,10 @@ class InterventionMamba(nn.Module):
             nn.LayerNorm(d_u),
         )
 
-        # Base SSM parameters
+        ## Base SSM parameters 
+    
         # A: diagonal, kept negative via log parameterisation
-        self.A_log = nn.Parameter(torch.zeros(d_h))          # log|A|, init -> A=-1
+        self.A_log = nn.Parameter(torch.zeros(d_h))          # log|A|
         nn.init.uniform_(self.A_log, -1.0, -0.1)
 
         # B: (d_h, d_u)  base input matrix
@@ -63,13 +61,12 @@ class InterventionMamba(nn.Module):
         nn.init.xavier_uniform_(self.B)
 
         # C: (d_h,)  base output probe vector
-        self.C = nn.Parameter(torch.zeros(d_h))
-
+        self.C = nn.Parameter(torch.zeros(d_h))  # not used in state update
         # D: scalar skip connection
-        self.D = nn.Parameter(torch.ones(1))
+        self.D = nn.Parameter(torch.ones(1))  # not used in state update
 
-        # Input-dependent (selective) corrections 
-        # maps ũ_k → [ΔB (d_h*d_u), ΔC (d_h), δ (1)]
+        # A learned linear layer that maps the projected dose u'_k to selective corrections of the SSM parameters.
+        # maps u'_k → [ΔB (d_h*d_u), ΔC (d_h), δ (1)]
         self.selective = nn.Linear(d_u, d_h * d_u + d_h + 1, bias=True)
 
     
@@ -87,7 +84,7 @@ class InterventionMamba(nn.Module):
         # Selective corrections
         sel   = self.selective(u_proj)                       # (B, d_h*d_u + d_h + 1)
         dB    = sel[:, :d_h * d_u].reshape(B_sz, d_h, d_u)  # (B, d_h, d_u)
-        dC    = sel[:, d_h * d_u: d_h * d_u + d_h]          # (B, d_h)
+        dC    = sel[:, d_h * d_u: d_h * d_u + d_h]          # (B, d_h)              # Not used
         delta = F.softplus(sel[:, -1])                       # (B,)  > 0
 
         # Effective per-sample B and C
@@ -129,7 +126,7 @@ class InterventionMamba(nn.Module):
         B     = h0.shape[0]
         K_max = t_int.shape[1]
 
-        # Store (time, hidden) path for later interpolation by the CDE module.
+        # Store (time, hidden) path 
         # We use lists of tensors; will be converted to padded tensors after.
         # path[i] = (scalar time, (B, d_h) hidden)
         # We accumulate all (t, h) pairs; entries beyond int_lens[b] are masked.
@@ -181,11 +178,7 @@ class InterventionMamba(nn.Module):
 class InterpolatedPath:
     """
     Zero-order-hold (ZOH) lookup over a (time, hidden-state) sequence.
-
-    query(t)  → (B, d_h)  returns the most-recently-updated hidden state
-    at or before t, i.e. h(t) = h_{k}  where k = max{j : t_j <= t}.
-    This is causally correct: future medication events never influence
-    the returned state.
+    query(t)  -> (B, d_h)  returns the most-recently-updated hidden state at or before t, i.e. h(t) = h_{k}  where k = max{j : t_j <= t}.
     """
 
     def __init__(
@@ -196,7 +189,6 @@ class InterpolatedPath:
         # Filter out None entries (shouldn't happen after forward, but safe)
         valid = [(t, s) for t, s in zip(times, states) if t is not None]
         # Stack into contiguous tensors so query() is a single vectorised op
-        # with no Python-level loop — eliminates per-segment kernel-launch overhead.
         self.times_mat  = torch.stack([v[0] for v in valid], dim=0)   # (K+1, B)
         self.states_mat = torch.stack([v[1] for v in valid], dim=0)   # (K+1, B, d_h)
 
@@ -206,14 +198,12 @@ class InterpolatedPath:
 
     def query(self, t: float | torch.Tensor) -> torch.Tensor:
         """
-        Vectorised piecewise-linear interpolation — no Python loop.
+        Vectorised piecewise-linear interpolation: no Python loop.
 
-        Parameters
-        ----------
+        # Parameters:
         t : scalar float or 0-d/1-d tensor
 
-        Returns
-        -------
+        # Returns:
         (B, d_h)
         """
         dev   = self.states_mat.device
@@ -241,7 +231,7 @@ class InterpolatedPath:
         # Active segment: t_lo[k] <= t_q < t_hi[k]
         in_seg = (t_q_e >= t_lo) & (t_q_e < t_hi)       # (K, B)
 
-        # Right extrapolation: t_q >= last breakpoint → hold final state
+        # Right extrapolation: t_q >= last breakpoint -> hold final state
         right_mask = (t_q >= t_hi[-1])                   # (B,)
 
         # ZOH: return h_lo of the active segment (no blend toward h_hi)
@@ -250,7 +240,7 @@ class InterpolatedPath:
         # Right extrapolation: clamp to last recorded state
         h_out = torch.where(right_mask.unsqueeze(-1), h_hi[-1], h_out)
 
-        # Left extrapolation: t_q < first breakpoint → return h0
+        # Left extrapolation: t_q < first breakpoint -> return h0
         left_mask = (t_q < t_lo[0]).unsqueeze(-1)        # (B, 1)
         h_out = torch.where(left_mask, h_lo[0], h_out)
 

@@ -1,12 +1,8 @@
 """
 collate_fn for ICUStreamsDataset.
 
-Pads variable-length sequences to the maximum length in the batch and
-stacks everything into batched tensors.
-
-All timestamps (t_dyn, t_int) are kept in their original raw-hour units
-so that the IrregularGRU and InterventionMamba can use physically meaningful
-Δt values.
+Pads variable-length sequences to the maximum length in the batch and stacks everything into batched tensors.
+All timestamps (t_dyn, t_int) are kept in their original raw-hour units so that the IrregularGRU/ODERNN and InterventionMamba can use physically meaningful Δt values.
 
 max_seq_len (optional): if provided, each patient's dynamic sequence is
 truncated to the *last* max_seq_len observations before padding. This
@@ -21,11 +17,9 @@ from functools import partial
 def collate_fn(batch: list[dict], max_seq_len: int | None = None) -> dict:
     """Collate a list of ICUStreamsDataset samples into batched tensors.
 
-    Parameters
-    ----------
+    ## Parameters
     batch       : list of dicts from ICUStreamsDataset.__getitem__
-    max_seq_len : if set, truncates each patient's dynamic sequence to the
-                  last max_seq_len timesteps (closest to extubation).
+    max_seq_len : if set, truncates each patient's dynamic sequence to the last max_seq_len timesteps (closest to extubation).
 
     Returns
     dict with keys:
@@ -51,10 +45,19 @@ def collate_fn(batch: list[dict], max_seq_len: int | None = None) -> dict:
             T = b["t_dyn"].shape[0]
             if T > max_seq_len:
                 start = T - max_seq_len
+                t_window_start = b["t_dyn"][start]
+
                 b = dict(b)   # shallow copy so we don't mutate dataset cache
                 b["t_dyn"] = b["t_dyn"][start:]
                 b["Y_dyn"] = b["Y_dyn"][start:]
                 b["M_dyn"] = b["M_dyn"][start:]
+
+                # Keep interventions aligned with the same recent-time window.
+                # "Corresponding intervention" = medication events at/after the
+                # first kept dynamic timestamp.
+                int_keep = b["t_int"] >= t_window_start
+                b["t_int"] = b["t_int"][int_keep]
+                b["U_int"] = b["U_int"][int_keep]
             truncated.append(b)
         batch = truncated
 

@@ -1,10 +1,8 @@
 """
-StaticEncoder
+StaticEncoder: Maps the static patient features S in R^{n_static} into two initial states:
 
-Maps the static patient features S ∈ R^{n_static} into two initial states:
-
-  h₀ ∈ R^{d_h}   — seed for the intervention Mamba stream
-  z₀ ∈ R^{d_z}   — seed for the dynamic CDE stream
+  h_theta in R^{d_h}: seed for the intervention Mamba stream
+  z_theta in R^{d_z}: seed for the dynamic stream
 """
 
 import torch
@@ -17,13 +15,13 @@ class StaticEncoder(nn.Module):
         Parameters:
         n_static : input dimension (number of static features, typically 5)
         d_h      : Mamba hidden-state dimension
-        d_z      : CDE latent dimension
+        d_z      : ODE-RNN/IrregularGRU latent dimension
         """
         super().__init__()
 
         hidden = max(64, (n_static + d_h) // 2 * 2)   # at least 64
 
-        # Branch → h₀
+        # Branch -> h_theta
         self.h_branch = nn.Sequential(
             nn.Linear(n_static, hidden),
             nn.LayerNorm(hidden),
@@ -32,7 +30,7 @@ class StaticEncoder(nn.Module):
             nn.Tanh(),  # bounded init keeps SSM stable
         )
 
-        # Branch → z₀
+        # Branch -> z_theta
         self.z_branch = nn.Sequential(
             nn.Linear(n_static, hidden),
             nn.LayerNorm(hidden),
@@ -47,7 +45,7 @@ class StaticEncoder(nn.Module):
         S : (B, n_static)
 
         Returns
-        h0 : (B, d_h)
-        z0 : (B, d_z)
+        h_theta : (B, d_h)
+        z_theta : (B, d_z)
         """
         return self.h_branch(S), self.z_branch(S)

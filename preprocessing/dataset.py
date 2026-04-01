@@ -36,7 +36,7 @@ class ICUStreamsDataset(Dataset):
         normalize: bool = False,
         scalers_path: str | None = None,
         task: str = "cls",        # "cls" | "reg" | "both"
-        label_scheme: str | None = None,  # "4class" | "6class" | None → use label_col from CSV
+        label_scheme: str | None = None,  # "4class" | "6class" | None -> use label_col from CSV
     ):
         self.static_df = pd.read_csv(static_csv)
         self.dyn_df    = pd.read_csv(dyn_csv)
@@ -80,9 +80,8 @@ class ICUStreamsDataset(Dataset):
         # make static row lookup
         self.static_df = self.static_df.set_index(pid_col)
 
-        # ── Precompute integer labels for all patients ──────────────────────
-        # If label_scheme is set, derive labels from the continuous target_col;
-        # otherwise fall back to the precomputed label_col column in the CSV.
+        #### Precompute integer labels for all patients
+        # If label_scheme is set, derive labels from the continuous target_col. otherwise fall back to the precomputed label_col column in the CSV.
         self.label_scheme = label_scheme
         if label_scheme is not None:
             if label_scheme not in LABEL_SCHEMES:

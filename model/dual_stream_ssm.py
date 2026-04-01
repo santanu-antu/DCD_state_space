@@ -6,7 +6,14 @@ Top-level model wiring together:
   StaticEncoder  →  (h₀, z₀)
   InterventionMamba(h₀, medications)            →  (h_final, h_path)
   IrregularGRU *or* ODERNNDynamic (z₀, physiology, h_path, t_dyn) → (z_final, Z_traj)
-  ReadoutHead(Z_traj, h_final, dyn_lens)        →  logits (B, 4)
+    ReadoutHead(Z_read, h_final)                   →  logits (B, 4)
+
+Readout sampling mode (readout_sampling_mode)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    "ode_uniform" : sample continuous ODE-RNN latent state z(t) on a uniform
+                                    time grid (current default for ODE-RNN path)
+    "zoh"         : resample observation-indexed trajectory Z_traj via ZOH on
+                                    a uniform time grid before attention
 
 Hidden-state coupling mode (h_mode)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -56,11 +63,15 @@ class DualStreamSSM(nn.Module):
         ode_hidden:     int   = 64,
         ode_layers:     int   = 2,
         h_mode:         str   = "continuous", # "continuous" | "intervention_gated"
+        n_read:         int   = 10,           # uniform resample points for readout
+        readout_sampling_mode: str = "ode_uniform",  # "ode_uniform" | "zoh"
         # kept as kwargs so old configs don't break
         **kwargs,
     ):
         super().__init__()
         self.h_mode      = h_mode
+        self.n_read      = n_read
+        self.readout_sampling_mode = readout_sampling_mode
         self.static_enc  = StaticEncoder(n_static, d_h, d_z)
         self.int_mamba   = InterventionMamba(n_int, d_u, d_h)
 
@@ -75,7 +86,13 @@ class DualStreamSSM(nn.Module):
             raise ValueError(f"Unknown dynamic_module: {dynamic_module!r}. "
                              "Choose 'irr_gru' or 'ode_rnn'.")
 
-        self.readout     = ReadoutHead(d_z, d_h, n_classes, dropout=dropout)
+        if self.readout_sampling_mode not in {"ode_uniform", "zoh"}:
+            raise ValueError(
+                f"Unknown readout_sampling_mode: {self.readout_sampling_mode!r}. "
+                "Choose 'ode_uniform' or 'zoh'."
+            )
+
+        self.readout     = ReadoutHead(d_z, d_h, n_classes, dropout=dropout, n_samples=n_read)
 
     # ─────────────────────────────────────────────────────────────────────────
     @staticmethod
@@ -135,8 +152,18 @@ class DualStreamSSM(nn.Module):
             intervention_mask=int_mask,
         )
 
-        # 5. Readout: masked-attention pool over trajectory + final Mamba state
-        logits = self.readout(Z_traj, h_final, seq_lens=dyn_lens)    # (B, n_classes)
+        # 5. Readout input trajectory
+        #    - ODE-RNN + ode_uniform: sample continuous latent z(t) on uniform grid
+        #    - ODE-RNN + zoh       : ZOH-resample Z_traj on uniform grid in ReadoutHead
+        #    - IrregularGRU        : ZOH-resample Z_traj on uniform grid in ReadoutHead
+        if isinstance(self.dyn_module, ODERNNDynamic) and self.readout_sampling_mode == "ode_uniform":
+            Z_read, _t_read = self.dyn_module.sample_uniform_states(
+                Z_traj, t_dyn, dyn_lens, self.n_read
+            )
+            logits = self.readout(Z_read, h_final)                     # (B, n_classes)
+        else:
+            logits = self.readout(Z_traj, h_final, seq_lens=dyn_lens,
+                                  t_dyn=t_dyn)                         # (B, n_classes)
 
         return logits
 
@@ -159,4 +186,6 @@ class DualStreamSSM(nn.Module):
             ode_hidden     = m.get("ode_hidden",     64),
             ode_layers     = m.get("ode_layers",     2),
             h_mode         = m.get("h_mode",         "continuous"),
+            n_read         = m.get("n_read",         10),
+            readout_sampling_mode = m.get("readout_sampling_mode", "ode_uniform"),
         )
