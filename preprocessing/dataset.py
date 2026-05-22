@@ -18,6 +18,10 @@ LABEL_SCHEMES: dict[str, dict] = {
         "edges": [30, 60, 120, 180, 240],  # bins: [0,30), [30,60), [60,120), [120,180), [180,240), [240,∞)
         "names": ["<30h", "30-60h", "60-120h", "120-180h", "180-240h", ">240h"],
     },
+    "binary_30h": {
+        "edges": [30],                    # bins: [0,30), [30,∞)
+        "names": ["<30h", ">=30h"],
+    },
 }
 
 
@@ -65,6 +69,10 @@ class ICUStreamsDataset(Dataset):
             # Indices of continuous static cols within static_cols (for selective scaling)
             cont_cols = self.scalers.get("static_continuous_cols", list(static_cols))
             self._static_cont_idx = [list(static_cols).index(c) for c in cont_cols]
+            
+            # Indices of continuous dynamic cols within dyn_cols
+            dyn_cont_cols = self.scalers.get("dyn_continuous_cols", self.dyn_cols)
+            self._dyn_cont_idx = [self.dyn_cols.index(c) for c in dyn_cont_cols]
 
         # group for fast lookup
         self.dyn_g  = self.dyn_df.groupby(pid_col, sort=False)
@@ -135,7 +143,13 @@ class ICUStreamsDataset(Dataset):
         M_dyn  = m[self.dyn_cols].to_numpy().astype(float)
 
         if self.normalize and self.scalers is not None:
-            Y_dyn = self.scalers["dynamic"].transform(Y_dyn)
+            # Scale only the continuous subset of dynamic columns
+            cont_idx = self._dyn_cont_idx
+            dyn_cont_vals = Y_dyn[:, cont_idx]
+            
+            # transform will return shape (T, len(cont_idx)); replace in-place
+            if dyn_cont_vals.shape[0] > 0 and dyn_cont_vals.shape[1] > 0:
+                Y_dyn[:, cont_idx] = self.scalers["dynamic"].transform(dyn_cont_vals)
 
         Y_dyn = torch.tensor(Y_dyn, dtype=torch.float32)
         M_dyn = torch.tensor(M_dyn, dtype=torch.float32)   # 1=observed, 0=imputed
@@ -162,5 +176,5 @@ class ICUStreamsDataset(Dataset):
             "t_int": t_int,               # [K]
             "U_int": U_int,               # [K, n_int]
             "y":     y,                    # scalar regression target
-            "y_cls": y_cls,               # int class label {0,1,2,3}
+            "y_cls": y_cls,               # int class label {0,1,2,3} etc
         }

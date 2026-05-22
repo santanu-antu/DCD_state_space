@@ -1,0 +1,77 @@
+data:
+  static_csv: data/af_bf_21/yale_bf_21/static_target.csv
+  dyn_csv: data/af_bf_21/yale_bf_21/dynamic_variables.csv
+  mask_csv: data/af_bf_21/yale_bf_21/missing_variables.csv
+  int_csv: data/af_bf_21/yale_bf_21/medications.csv
+  scalers_path: checkpoints/test_scalers_full.pkl
+  dyn_continuous_cols:
+  - dynamic_bnp
+  - dynamic_cohemoglobin
+  - dynamic_fio2
+  - dynamic_hemoglobin
+  - dynamic_lactate
+  - dynamic_map
+  - dynamic_methmoglobin
+  - dynamic_o2hemoglobin
+  - dynamic_pco2
+  - dynamic_peep
+  - dynamic_ph
+  - dynamic_po2
+  - dynamic_pulse
+  - dynamic_respirations
+  - dynamic_spo2
+  - dynamic_troponini
+  - dynamic_troponint
+  static_cols:
+  - SEX
+  - WEIGHT_IN_KG
+  - BMI
+  - AGE
+  - has_dialysisorders
+  static_continuous_cols:
+  - WEIGHT_IN_KG
+  - BMI
+  - AGE
+  static_binary_cols:
+  - SEX
+  - has_dialysisorders
+  target_col: time_extub_to_death_hours
+  label_col: time_range
+  time_col: time_to_extube_hours
+  pid_col: PAT_ID
+  max_seq_len: 100
+  label_scheme: 6class
+split:
+  train_frac: 0.99
+  val_frac: 0.01
+  seed: 162
+model:
+  d_h: 128
+  d_u: 64
+  d_z: 128
+  n_read: 50
+  n_dyn: 20
+  n_int: 5
+  n_static: 5
+  n_classes: 6
+  dynamic_module: ode_rnn
+  ode_hidden: 64
+  ode_layers: 2
+  dropout: 0.3
+  h_mode: intervention_gated
+  readout_sampling_mode: ode_uniform
+training:
+  batch_size: 64
+  epochs: 50
+  lr: 6.0e-05
+  weight_decay: 4.0e-06
+  grad_clip: 1.0
+  lr_scheduler: plateau
+  lr_patience: 3
+  lr_factor: 0.5
+  use_class_weights: false
+paths:
+  checkpoint_dir: checkpoints/
+  log_dir: logs/
+  best_model: checkpoints/best_model_yale_bf_100.pt
+  results: results/test_metrics_yale_bf.json

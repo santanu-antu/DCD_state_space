@@ -71,7 +71,6 @@ def collate_fn(batch: list[dict], max_seq_len: int | None = None) -> dict:
 
     n_dyn = batch[0]["Y_dyn"].shape[1]
     # U_int is always 2D (K, n_int) from dataset.py, even when K==0.
-    # Using numel() as a guard was wrong for empty tensors like (0, 5).
     n_int = batch[0]["U_int"].shape[-1]
 
     # allocate padded tensors 

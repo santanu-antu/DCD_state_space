@@ -34,3 +34,5 @@ sweeps/
 run_yale_sweep.slurm
 sweep_yale_bf_to_af.sh
 run_experiments.sh
+run_seq_len_sweep.sh
+zzztest.ipynb

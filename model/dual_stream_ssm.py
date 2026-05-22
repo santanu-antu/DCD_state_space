@@ -1,33 +1,25 @@
 """
-DualStreamSSM
+DualStreamSSM: This is the actual model. It wires together the components defined in other files.
 -------------
-Top-level model wiring together:
+  StaticEncoder  ->  (h₀, z₀)
+  InterventionMamba(h₀, medications)            ->  (h_final, h_path)
+  IrregularGRU OR ODERNNDynamic (z₀, physiology, h_path, t_dyn) → (z_final, Z_traj)
+  ReadoutHead(Z_read, h_final)                   ->  logits (B, 4)
 
-  StaticEncoder  →  (h₀, z₀)
-  InterventionMamba(h₀, medications)            →  (h_final, h_path)
-  IrregularGRU *or* ODERNNDynamic (z₀, physiology, h_path, t_dyn) → (z_final, Z_traj)
-    ReadoutHead(Z_read, h_final)                   →  logits (B, 4)
+Readout sampling mode (readout_sampling_mode):
+    "ode_uniform" : sample continuous ODE-RNN latent state z(t) on a uniform time grid (default for ODE-RNN path)
+    "zoh"         : resample observation-indexed trajectory Z_traj via ZOH on a uniform time grid before attention
 
-Readout sampling mode (readout_sampling_mode)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    "ode_uniform" : sample continuous ODE-RNN latent state z(t) on a uniform
-                                    time grid (current default for ODE-RNN path)
-    "zoh"         : resample observation-indexed trajectory Z_traj via ZOH on
-                                    a uniform time grid before attention
-
-Hidden-state coupling mode (h_mode)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Hidden-state coupling mode (h_mode):
   "continuous"         : h(t) queried at every dynamic observation (default)
   "intervention_gated" : h(t) injected into z only at dynamic steps where
                          at least one medication event falls in (t_{k-1}, t_k];
                          h is zeroed-out at all other steps
 
-Forward signature
-~~~~~~~~~~~~~~~~~
+Forward signature:
   logits = model(S, t_dyn, Y_dyn, M_dyn, t_int, U_int, dyn_lens, int_lens)
 
-Inputs (all batched, B = batch size)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Inputs (all batched, B = batch size):
   S         : (B, n_static)
   t_dyn     : (B, T_max)          actual ICU timestamps (raw hours)
   Y_dyn     : (B, T_max, n_dyn)   dynamic features
@@ -45,7 +37,7 @@ from model.static_encoder     import StaticEncoder
 from model.intervention_mamba import InterventionMamba
 from model.irregular_gru      import IrregularGRU
 from model.ode_rnn_dynamic    import ODERNNDynamic
-from model.readout             import ReadoutHead
+from model.readout            import ReadoutHead
 
 
 class DualStreamSSM(nn.Module):
@@ -65,7 +57,6 @@ class DualStreamSSM(nn.Module):
         h_mode:         str   = "continuous", # "continuous" | "intervention_gated"
         n_read:         int   = 10,           # uniform resample points for readout
         readout_sampling_mode: str = "ode_uniform",  # "ode_uniform" | "zoh"
-        # kept as kwargs so old configs don't break
         **kwargs,
     ):
         super().__init__()
@@ -78,23 +69,17 @@ class DualStreamSSM(nn.Module):
         if dynamic_module == "irr_gru":
             self.dyn_module = IrregularGRU(n_dyn=n_dyn, d_h=d_h, d_z=d_z)
         elif dynamic_module == "ode_rnn":
-            self.dyn_module = ODERNNDynamic(
-                n_dyn=n_dyn, d_h=d_h, d_z=d_z,
-                ode_hidden=ode_hidden, ode_layers=ode_layers,
-            )
+            self.dyn_module = ODERNNDynamic(n_dyn=n_dyn, d_h=d_h, d_z=d_z, ode_hidden=ode_hidden, ode_layers=ode_layers,)
         else:
-            raise ValueError(f"Unknown dynamic_module: {dynamic_module!r}. "
-                             "Choose 'irr_gru' or 'ode_rnn'.")
+            raise ValueError(f"Unknown dynamic_module: {dynamic_module!r}. Choose 'irr_gru' or 'ode_rnn'.")
 
         if self.readout_sampling_mode not in {"ode_uniform", "zoh"}:
             raise ValueError(
-                f"Unknown readout_sampling_mode: {self.readout_sampling_mode!r}. "
-                "Choose 'ode_uniform' or 'zoh'."
-            )
+                f"Unknown readout_sampling_mode: {self.readout_sampling_mode!r}. Choose 'ode_uniform' or 'zoh'.")
 
         self.readout     = ReadoutHead(d_z, d_h, n_classes, dropout=dropout, n_samples=n_read)
 
-    # ─────────────────────────────────────────────────────────────────────────
+
     @staticmethod
     def _intervention_mask(
         t_dyn:    torch.Tensor,   # (B, T_max)  raw hours
@@ -102,7 +87,7 @@ class DualStreamSSM(nn.Module):
         int_lens: torch.Tensor,   # (B,)
     ) -> torch.Tensor:            # (B, T_max)  bool
         """
-        Returns True at dynamic step k when at least one *valid* intervention
+        Returns True at dynamic step k when at least one valid intervention
         event falls in the half-open window (t_dyn[:,k-1], t_dyn[:,k]].
         Step k=0 uses the window (-inf, t_dyn[:,0]].
         """
@@ -110,19 +95,20 @@ class DualStreamSSM(nn.Module):
         K    = t_int.shape[1]
         dev  = t_dyn.device
 
-        # Lower bound for each step: previous observation time (−∞ for k=0)
+        # Lower bound for each dynamic step: previous observation time (−infinity for k=0)
         t_lo = torch.cat([t_dyn[:, :1] - 1e9, t_dyn[:, :-1]], dim=1)  # (B, T)
 
         # (B, T, K): is intervention j in window for step k?
         in_win = (t_int.unsqueeze(1) >  t_lo.unsqueeze(2)) & \
                  (t_int.unsqueeze(1) <= t_dyn.unsqueeze(2))             # (B, T, K)
 
-        # Mask out padding in intervention dimension
+        # Mask out padding in intervention
         valid = torch.arange(K, device=dev).unsqueeze(0) < int_lens.unsqueeze(1)  # (B, K)
         in_win = in_win & valid.unsqueeze(1)                            # (B, T, K)
 
         return in_win.any(dim=2)                                        # (B, T) bool
-    # ─────────────────────────────────────────────────────────────────────────
+    
+
     def forward(
         self,
         S:        torch.Tensor,   # (B, n_static)
@@ -146,6 +132,9 @@ class DualStreamSSM(nn.Module):
         if self.h_mode == "intervention_gated":
             int_mask = self._intervention_mask(t_dyn, t_int, int_lens)
 
+        # MASK UNOBSERVED VARIABLES COMPLETELY
+        Y_dyn = Y_dyn * M_dyn
+
         # 4. Dynamic stream: irregular-time module conditioned on h(t)
         _z_final, Z_traj = self.dyn_module(
             z0, t_dyn, Y_dyn, M_dyn, dyn_lens, h_path,
@@ -167,11 +156,10 @@ class DualStreamSSM(nn.Module):
 
         return logits
 
-    # ─────────────────────────────────────────────────────────────────────────
+
     @staticmethod
-    def from_config(cfg: dict) -> "DualStreamSSM":
+    def from_config(cfg: dict) -> "DualStreamSSM":  # Can build the model directly from the config file
         m = cfg["model"]
-        # solver section is optional (kept for backward compat with old configs)
         s = cfg.get("solver", {})
         return DualStreamSSM(
             n_static       = m.get("n_static", 5),

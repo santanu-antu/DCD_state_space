@@ -1,6 +1,5 @@
 """
 StaticEncoder: Maps the static patient features S in R^{n_static} into two initial states:
-
   h_theta in R^{d_h}: seed for the intervention Mamba stream
   z_theta in R^{d_z}: seed for the dynamic stream
 """

@@ -3,7 +3,25 @@ data:
   dyn_csv:      data/af_bf_21/yale_bf_21/dynamic_variables.csv
   mask_csv:     data/af_bf_21/yale_bf_21/missing_variables.csv
   int_csv:      data/af_bf_21/yale_bf_21/medications.csv
-  scalers_path: checkpoints/scalers_yale_bf.pkl
+  scalers_path: checkpoints/test_scalers_full.pkl
+  dyn_continuous_cols:
+    - dynamic_bnp
+    - dynamic_cohemoglobin
+    - dynamic_fio2
+    - dynamic_hemoglobin
+    - dynamic_lactate
+    - dynamic_map
+    - dynamic_methmoglobin
+    - dynamic_o2hemoglobin
+    - dynamic_pco2
+    - dynamic_peep
+    - dynamic_ph
+    - dynamic_po2
+    - dynamic_pulse
+    - dynamic_respirations
+    - dynamic_spo2
+    - dynamic_troponini
+    - dynamic_troponint
   static_cols:
     - SEX
     - WEIGHT_IN_KG
@@ -25,8 +43,8 @@ data:
   label_scheme: "4class"
 
 split:
-  train_frac: 0.80
-  val_frac:   0.19
+  train_frac: 0.99
+  val_frac:   0.01
   seed: 162
 
 model:
@@ -47,14 +65,14 @@ model:
 
 training:
   batch_size:        64
-  epochs:            20
-  lr:                8.0e-05
+  epochs:            50
+  lr:                6.0e-05
   weight_decay:      4.0e-06
   grad_clip:         1.0
   lr_scheduler:      plateau
   lr_patience:       3
   lr_factor:         0.5
-  use_class_weights: true
+  use_class_weights: false
 
 paths:
   checkpoint_dir: checkpoints/

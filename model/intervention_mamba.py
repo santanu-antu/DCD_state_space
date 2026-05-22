@@ -21,7 +21,7 @@ After processing all K events the module stores {(t_k, h_k)} and exposes
 `query(t)` for zero-order-hold (ZOH) lookup at arbitrary query times.
 ZOH is causally correct: no future event information leaks into the query.
 
-For patients with no medication events the hidden state stays at h₀.
+For patients with no medication events the hidden state stays at h_theta.
 """
 
 import math
@@ -45,10 +45,7 @@ class InterventionMamba(nn.Module):
         self.n_int = n_int
 
         # Input projection 
-        self.input_proj = nn.Sequential(
-            nn.Linear(n_int, d_u),
-            nn.LayerNorm(d_u),
-        )
+        self.input_proj = nn.Sequential(nn.Linear(n_int, d_u), nn.LayerNorm(d_u),)
 
         ## Base SSM parameters 
     
@@ -66,8 +63,8 @@ class InterventionMamba(nn.Module):
         self.D = nn.Parameter(torch.ones(1))  # not used in state update
 
         # A learned linear layer that maps the projected dose u'_k to selective corrections of the SSM parameters.
-        # maps u'_k → [ΔB (d_h*d_u), ΔC (d_h), δ (1)]
-        self.selective = nn.Linear(d_u, d_h * d_u + d_h + 1, bias=True)
+        # While B, C, D are global learnable parameters, the corrections ΔB_k, ΔC_k, δ_k are input-dependent since they don't consist of parameters but are computed by a linear layer applied to the input u'_k
+        self.selective = nn.Linear(d_u, d_h * d_u + d_h + 1, bias=True)  # maps u'_k -> [ΔB (d_h*d_u), ΔC (d_h), δ (1)]
 
     
     def _zoh_step(

@@ -23,6 +23,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import yaml
+from sklearn.metrics import balanced_accuracy_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils.class_weight import compute_class_weight
@@ -39,18 +40,34 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-def build_splits(dataset: ICUStreamsDataset, cfg: dict) -> tuple:
+def build_splits(dataset: ICUStreamsDataset, cfg: dict) -> tuple:  # The split is stratified by the label, but in the full mode we train on all data without splitting, and test on a separate cohort
     sp = cfg["split"]
     seed = sp["seed"]
+    train_frac = float(sp["train_frac"])
+    val_frac = float(sp["val_frac"])
+    test_frac = 1.0 - train_frac - val_frac
+    if train_frac <= 0 or val_frac < 0 or test_frac < -1e-8:
+        raise ValueError(
+            "Invalid split fractions: expected train_frac > 0, val_frac >= 0, "
+            "and train_frac + val_frac <= 1."
+        )
+
     labels = dataset.labels.tolist()
     indices = list(range(len(dataset)))
-    tr_val_idx, te_idx, tr_val_lbl, _ = train_test_split(
-        indices, labels,
-        test_size=1.0 - sp["train_frac"] - sp["val_frac"],
-        stratify=labels,
-        random_state=seed,
-    )
-    val_frac_corrected = sp["val_frac"] / (sp["train_frac"] + sp["val_frac"])
+    if test_frac > 1e-8:
+        tr_val_idx, te_idx, tr_val_lbl, _ = train_test_split(
+            indices, labels,
+            test_size=test_frac,
+            stratify=labels,
+            random_state=seed,
+        )
+    else:
+        tr_val_idx, te_idx, tr_val_lbl = indices, [], labels
+
+    if val_frac <= 0:
+        return tr_val_idx, [], te_idx
+
+    val_frac_corrected = val_frac / (train_frac + val_frac)
     tr_idx, va_idx = train_test_split(
         tr_val_idx,
         test_size=val_frac_corrected,
@@ -65,6 +82,10 @@ def _fit_scalers_on_train(dataset: ICUStreamsDataset, tr_idx: list[int], cfg: di
     dyn_cols = dataset.dyn_cols
     int_cols = dataset.int_cols
     static_continuous_cols = d_cfg["static_continuous_cols"]
+    
+    # Check if dyn_continuous_cols is explicitly in config, else default to all of dyn_cols
+    dyn_continuous_cols = d_cfg.get("dyn_continuous_cols", dyn_cols)
+    dyn_cont_idx = [dyn_cols.index(c) for c in dyn_continuous_cols]
 
     train_pids = [dataset.pat_ids[i] for i in tr_idx]
     train_pid_set = set(train_pids)
@@ -78,11 +99,14 @@ def _fit_scalers_on_train(dataset: ICUStreamsDataset, tr_idx: list[int], cfg: di
 
     dyn_vals = train_dyn[dyn_cols].values.astype(float)
     mask_vals = train_mask[dyn_cols].values.astype(float)
+    
+    dyn_cont_vals = dyn_vals[:, dyn_cont_idx]
+    mask_cont_vals = mask_vals[:, dyn_cont_idx]
 
-    means = np.zeros(len(dyn_cols))
-    stds = np.ones(len(dyn_cols))
-    for i in range(len(dyn_cols)):
-        observed = dyn_vals[:, i][mask_vals[:, i] == 1]
+    means = np.zeros(len(dyn_continuous_cols))
+    stds = np.ones(len(dyn_continuous_cols))
+    for i in range(len(dyn_continuous_cols)):
+        observed = dyn_cont_vals[:, i][mask_cont_vals[:, i] == 1]
         observed = observed[~np.isnan(observed)]
         if len(observed) > 1:
             means[i] = observed.mean()
@@ -94,7 +118,7 @@ def _fit_scalers_on_train(dataset: ICUStreamsDataset, tr_idx: list[int], cfg: di
     dyn_scaler.mean_ = means
     dyn_scaler.scale_ = stds
     dyn_scaler.var_ = stds ** 2
-    dyn_scaler.n_features_in_ = len(dyn_cols)
+    dyn_scaler.n_features_in_ = len(dyn_continuous_cols)
 
     return {
         "static": static_scaler,
@@ -102,12 +126,14 @@ def _fit_scalers_on_train(dataset: ICUStreamsDataset, tr_idx: list[int], cfg: di
         "static_cols": d_cfg["static_cols"],
         "static_continuous_cols": static_continuous_cols,
         "dyn_cols": dyn_cols,
+        "dyn_continuous_cols": dyn_continuous_cols,
         "int_cols": int_cols,
     }
 
 def run_epoch(model, loader, criterion, optimizer, device, grad_clip, train):
     model.train() if train else model.eval()
     total_loss, total_correct, total_n = 0.0, 0, 0
+    all_preds, all_labels = [], []
     ctx = torch.enable_grad() if train else torch.no_grad()
     with ctx:
         for batch in loader:
@@ -133,9 +159,18 @@ def run_epoch(model, loader, criterion, optimizer, device, grad_clip, train):
 
             B = y_cls.shape[0]
             total_loss += loss.item() * B
-            total_correct += (logits.argmax(1) == y_cls).sum().item()
+            preds = logits.argmax(1)
+            total_correct += (preds == y_cls).sum().item()
             total_n += B
-    return total_loss / total_n, total_correct / total_n
+            all_preds.extend(preds.detach().cpu().tolist())
+            all_labels.extend(y_cls.detach().cpu().tolist())
+    balanced_acc = balanced_accuracy_score(all_labels, all_preds) if total_n else 0.0
+    return total_loss / total_n, total_correct / total_n, balanced_acc
+
+def is_better_metric(metric_name: str, metric_value: float, best_value: float) -> bool:
+    if metric_name == "val_loss":
+        return metric_value < best_value
+    return metric_value > best_value
 
 def main():
     parser = argparse.ArgumentParser()
@@ -143,6 +178,14 @@ def main():
     parser.add_argument("--mode", choices=["split", "full"], default="split", help="split: train/val/test splits, full: train on full data")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None, help="Override split seed")
+    parser.add_argument("--train_frac", type=float, default=None, help="Override config split.train_frac")
+    parser.add_argument("--val_frac", type=float, default=None, help="Override config split.val_frac")
+    parser.add_argument(
+        "--selection_metric",
+        choices=["val_loss", "accuracy", "balanced_accuracy"],
+        default=None,
+        help="Metric used to save the best split-mode checkpoint",
+    )
     parser.add_argument("--out_dir", type=str, default=None, help="Directory to save artifacts. If unused, falls back to config `paths` keys.")
     args = parser.parse_args()
 
@@ -156,6 +199,11 @@ def main():
     if "split" not in cfg:
         cfg["split"] = {}
     cfg["split"]["seed"] = seed
+    if args.train_frac is not None:
+        cfg["split"]["train_frac"] = args.train_frac
+    if args.val_frac is not None:
+        cfg["split"]["val_frac"] = args.val_frac
+    selection_metric = args.selection_metric or cfg["training"].get("selection_metric", "val_loss")
     
     if args.out_dir is not None:
         # Append the seed as a separate folder
@@ -194,6 +242,9 @@ def main():
     dataset.normalize = True
     cont_cols = scalers["static_continuous_cols"]
     dataset._static_cont_idx = [list(dataset.static_cols).index(c) for c in cont_cols]
+    
+    dyn_cont_cols = scalers.get("dyn_continuous_cols", dataset.dyn_cols)
+    dataset._dyn_cont_idx = [dataset.dyn_cols.index(c) for c in dyn_cont_cols]
 
     scalers_path = d_cfg.get("scalers_path", "scalers.pkl")
     os.makedirs(os.path.dirname(scalers_path) or ".", exist_ok=True)
@@ -241,17 +292,17 @@ def main():
     elif sched_name == "plateau":
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", patience=tr_cfg.get("lr_patience", 3), factor=tr_cfg.get("lr_factor", 0.5))
 
-    best_val_loss = math.inf
+    best_metric = math.inf if selection_metric == "val_loss" else -math.inf
     history = []
     
     for epoch in range(1, tr_cfg["epochs"] + 1):
         t0 = time.time()
         run_epoch(model, train_loader, criterion, optimizer, device, tr_cfg.get("grad_clip"), train=True)
-        tr_loss, tr_acc = run_epoch(model, train_loader, criterion, None, device, tr_cfg.get("grad_clip"), train=False)
+        tr_loss, tr_acc, tr_bacc = run_epoch(model, train_loader, criterion, None, device, tr_cfg.get("grad_clip"), train=False)
         
-        va_loss, va_acc = 0.0, 0.0
+        va_loss, va_acc, va_bacc = 0.0, 0.0, 0.0
         if val_loader:
-            va_loss, va_acc = run_epoch(model, val_loader, criterion, None, device, tr_cfg.get("grad_clip"), train=False)
+            va_loss, va_acc, va_bacc = run_epoch(model, val_loader, criterion, None, device, tr_cfg.get("grad_clip"), train=False)
             if scheduler:
                 if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau): scheduler.step(va_loss)
                 else: scheduler.step()
@@ -260,16 +311,33 @@ def main():
                 scheduler.step()
 
         elapsed = time.time() - t0
-        history.append(dict(epoch=epoch, tr_loss=tr_loss, tr_acc=tr_acc, va_loss=va_loss, va_acc=va_acc, elapsed=elapsed))
+        history.append(dict(epoch=epoch, tr_loss=tr_loss, tr_acc=tr_acc, tr_bacc=tr_bacc, va_loss=va_loss, va_acc=va_acc, va_bacc=va_bacc, elapsed=elapsed))
         
         if args.mode == "split":
-            print(f"[{epoch:03d}/{tr_cfg['epochs']}] loss: {tr_loss:.4f}/{va_loss:.4f} acc: {tr_acc:.3f}/{va_acc:.3f} ({elapsed:.1f}s)")
-            if va_loss < best_val_loss:
-                best_val_loss = va_loss
-                torch.save({"epoch": epoch, "state_dict": model.state_dict(), "val_loss": va_loss, "val_acc": va_acc}, cfg.get("paths", {}).get("best_model", "best_model.pt"))
-                print(f"  ✓ Saved best model (val_loss={va_loss:.4f})")
+            metric_values = {
+                "val_loss": va_loss,
+                "accuracy": va_acc,
+                "balanced_accuracy": va_bacc,
+            }
+            current_metric = metric_values[selection_metric]
+            print(f"[{epoch:03d}/{tr_cfg['epochs']}] loss: {tr_loss:.4f}/{va_loss:.4f} acc: {tr_acc:.3f}/{va_acc:.3f} bacc: {tr_bacc:.3f}/{va_bacc:.3f} ({elapsed:.1f}s)")
+            if is_better_metric(selection_metric, current_metric, best_metric):
+                best_metric = current_metric
+                torch.save(
+                    {
+                        "epoch": epoch,
+                        "state_dict": model.state_dict(),
+                        "selection_metric": selection_metric,
+                        "selection_metric_value": current_metric,
+                        "val_loss": va_loss,
+                        "val_acc": va_acc,
+                        "val_bacc": va_bacc,
+                    },
+                    cfg.get("paths", {}).get("best_model", "best_model.pt"),
+                )
+                print(f"  ✓ Saved best model ({selection_metric}={current_metric:.4f})")
         else:
-            print(f"[{epoch:03d}/{tr_cfg['epochs']}] tr_loss: {tr_loss:.4f} tr_acc: {tr_acc:.3f} ({elapsed:.1f}s)")
+            print(f"[{epoch:03d}/{tr_cfg['epochs']}] tr_loss: {tr_loss:.4f} tr_acc: {tr_acc:.3f} tr_bacc: {tr_bacc:.3f} ({elapsed:.1f}s)")
             torch.save({"epoch": epoch, "state_dict": model.state_dict(), "train_loss": tr_loss}, cfg.get("paths", {}).get("best_model", "best_model.pt"))
 
     log_path = os.path.join(cfg.get("paths", {}).get("log_dir", "."), "log.json")
